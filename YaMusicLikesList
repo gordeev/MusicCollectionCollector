@@ -1,0 +1,76 @@
+from yandex_music import Client
+import json
+
+#Yandex music sessionID
+session_id = ''
+# Инициализация клиента
+client = Client(session_id).init()
+
+output_lines = []
+
+def fetch_playlist_details(playlist_id):
+    """
+    Выполняет запрос к эндпоинту получения деталей плейлиста.
+    Добавляет параметр lang=ru.
+    """
+    url = "https://api.music.yandex.net/playlist/" + playlist_id + "?lang=ru"
+    return client._request.get(url)
+
+# Получаем список пользовательских плейлистов
+playlists = client.users_playlists_list()
+for pl in playlists:
+    output_lines.append(f'Плейлист: {pl.title}')
+    # Для каждого плейлиста используем его идентификатор (поле kind) для получения деталей
+    try:
+        details = fetch_playlist_details(pl.kind)
+    except Exception as e:
+        output_lines.append("  Ошибка при получении деталей плейлиста: " + str(e))
+        output_lines.append("")
+        continue
+
+    tracks = details.get("tracks", [])
+    if not tracks:
+        output_lines.append("  (нет треков)")
+    else:
+        for item in tracks:
+            # Каждый элемент должен содержать словарь "track" с информацией о треке
+            track = item.get("track")
+            if not track:
+                continue
+            # Составляем строку с именем исполнителя и названием трека
+            artists = ', '.join([artist.get("name", "") for artist in track.get("artists", [])])
+            title = track.get("title", "")
+            output_lines.append(f'  {artists} — {title}')
+    output_lines.append("")
+
+# Получение данных для плейлиста "Мне нравится"
+# По ссылке на iframe можно заметить, что ID этого плейлиста равен:
+liked_playlist_id = ""
+
+output_lines.append("Плейлист 'Мне нравится':")
+try:
+    likes_details = fetch_playlist_details(liked_playlist_id)
+except Exception as e:
+    output_lines.append("  Ошибка при получении лайков: " + str(e))
+else:
+    tracks = likes_details.get("tracks", [])
+    if not tracks:
+        output_lines.append("  (нет треков)")
+    else:
+        for item in tracks:
+            track = item.get("track")
+            if not track:
+                continue
+            artists = ', '.join([artist.get("name", "") for artist in track.get("artists", [])])
+            title = track.get("title", "")
+            output_lines.append(f'  {artists} — {title}')
+output_lines.append("")
+
+# Сохранение результата в файл "tracks.txt"
+with open("tracks.txt", "w", encoding="utf-8") as f:
+    for line in output_lines:
+        f.write(line + "\n")
+
+# Вывод результата в консоль
+for line in output_lines:
+    print(line)
