@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+import os
+import time
+import subprocess
+import isodate
+from typing import Optional
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+# Файл со списком треков (по одному названию на строку)
+TRACKS_FILE = 'tracks.txt'
+# Задержка между итерациями (секунды)
+DELAY_SECONDS = 5
+# Минимальная длительность видео (секунды) для фильтрации коротких роликов
+MIN_DURATION_SEC = 60
+
+# Флаг для переключения на фоллбек после первой ошибки квоты
+USE_API = True
+
+# Читаем API‑ключ из переменной окружения
+API_KEY = os.getenv('YOUTUBE_API_KEY')
+if not API_KEY:
+    raise RuntimeError("Установи переменную YOUTUBE_API_KEY с твоим ключом")
+
+# Создаём клиент YouTube Data API
+youtube = build('youtube', 'v3', developerKey=API_KEY)
+
+def find_video_id_via_api(query: str) -> Optional[str]:
+    """
+    Ищет первое видео по запросу через YouTube Data API (maxResults=1),
+    проверяет длительность ролика и возвращает videoId или None.
+    """
+    resp = youtube.search().list(
+        q=query,
+        part='id',
+        type='video',
+        maxResults=1
+    ).execute()
+
+    items = resp.get('items', [])
+    if not items:
+        return None
+
+    vid = items[0]['id']['videoId']
+    details = youtube.videos().list(
+        id=vid,
+        part='contentDetails'
+    ).execute().get('items', [])
+    if not details:
+        return None
+
+    duration = isodate.parse_duration(
+        details[0]['contentDetails']['duration']
+    ).total_seconds()
+    return vid if duration >= MIN_DURATION_SEC else None
+
+
+def download_with_yt_dlp_search(query: str):
+    """
+    Фоллбек: ищет и качает через встроенный поисковик yt-dlp (ytsearch1:).
+    """
+    cmd = [
+        'yt-dlp',
+        f'ytsearch1:{query}',
+        '--no-playlist',
+        '-x', '--audio-format', 'mp3',
+        '--output', '%(title)s.%(ext)s'
+    ]
+    print(f'  🔄 fallback yt-dlp search для: {query!r}')
+    subprocess.run(cmd, check=False)
+
+
+def download_track(track: str) -> None:
+    """
+    Пытается скачать через API→yt-dlp; при ошибке квоты или отсутствии результата —
+    фоллбек на чистый yt-dlp.
+    После скачивания удаляет строку из TRACKS_FILE, чтобы не перезапускать повторно.
+    """
+    global USE_API
+    print(f'► Скачиваем: {track!r}')
+
+    if USE_API:
+        try:
+            vid = find_video_id_via_api(track)
+            if not vid:
+                raise ValueError("Не найдено видео через API")
+            url = f'https://www.youtube.com/watch?v={vid}'
+            print(f'  → найден videoId={vid}, качаем…')
+            subprocess.run([
+                'yt-dlp',
+                '--no-playlist',
+                '-x', '--audio-format', 'mp3',
+                '--output', '%(title)s.%(ext)s',
+                url
+            ], check=False)
+        except HttpError as e:
+            print(f'  ⚠️ API error: {e}')
+            USE_API = False
+            download_with_yt_dlp_search(track)
+        except Exception as e:
+            print(f'  ⚠️ fallback по причине: {e}')
+            download_with_yt_dlp_search(track)
+    else:
+        download_with_yt_dlp_search(track)
+
+    # После успешного скачивания удаляем строку из файла
+    try:
+        with open(TRACKS_FILE, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        with open(TRACKS_FILE, 'w', encoding='utf-8') as f:
+            removed = False
+            for line in lines:
+                if not removed and line.strip() == track:
+                    removed = True
+                    continue
+                f.write(line)
+        print('  🗑️ Удалили строку из tracks.txt')
+    except Exception as e:
+        print(f'  ❌ Ошибка при удалении строки: {e}')
+
+
+def main():
+    try:
+        with open(TRACKS_FILE, encoding='utf-8') as f:
+            tracks = [l.strip() for l in f if l.strip()]
+    except FileNotFoundError:
+        print(f"Файл {TRACKS_FILE} не найден.")
+        return
+
+    for idx, track in enumerate(tracks, start=1):
+        print(f'[{idx}/{len(tracks)}]')
+        download_track(track)
+        if idx < len(tracks):
+            print(f'Ждём {DELAY_SECONDS} сек…')
+            time.sleep(DELAY_SECONDS)
+
+if __name__ == '__main__':
+    main()
